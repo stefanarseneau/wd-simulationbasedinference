@@ -17,38 +17,20 @@ import os
 
 from . import simulator
 
-def prior(theta, plx, e_plx, device, L = 350):
-    """ implements priors for all three parameters,
-    distance : truncated transformed chi2 prior with six degrees of freedom per Bailer-Jones 2015
-    temperature & radius : uniform priors
-    """
-    # distance prior
-    real_theta = theta * theta_std.to(device=device) + theta_mean.to(device=device)
-    plx = plx * x_std[0].to(device=device) + x_mean[0].to(device=device)
-    e_plx = e_plx * x_std[1].to(device=device) + x_mean[1].to(device=device)
-    likelihood = torch.distributions.Normal(1/real_theta[:,1], e_plx).log_prob(plx)
-    distance_prior = transformed_distribution.TransformedDistribution(
-        Chi2(torch.tensor([6]).to(device=device)), 
-        transforms.AffineTransform(loc=torch.tensor([0]).to(device=device), scale=torch.tensor([0.5 * L]).to(device=device))
-    ).log_prob(real_theta[:,1])
-    #uniform prior
-    log_prior = torch.zeros(real_theta.shape[0], device=device)
-    bounds = torch.tensor([[1000, 120000], [0, 2000], [0.001, 0.05]], device=device)
-    for i in range(3):
-        min_bound, max_bound = bounds[i]
-        # Check if parameter i is within bounds for all examples
-        within_bounds = (real_theta[:, i] >= min_bound) & (real_theta[:, i] <= max_bound)
-        log_prior[~within_bounds] = torch.inf
-    return likelihood + distance_prior + log_prior 
-
 class NeuralPosteriorEstimator(LightningModule):
     """ Simple neural posterior estimator class using a normalizing flow as the posterior density estimator.
     """
-    def __init__(self, featurizer_in, featurizer_h, featurizer_layers, nflow_h, nflow_layers, context_dimension):  
+    def __init__(self, featurizer_in, featurizer_h, featurizer_layers, nflow_h, nflow_layers, context_dimension,
+                 x_mean = None, x_std = None, theta_mean = None, theta_std = None):  
         super().__init__()
         self.hparam_dict = {'featurizer_in' : featurizer_in, 'featurizer_h' : featurizer_h, 'featurizer_layers' : featurizer_layers,
                         'nflow_h' : nflow_h, 'nflow_layers' : nflow_layers, 'context_dimension' : context_dimension}
         self.flow_in = 3
+
+        self.x_mean = x_mean.to(self.device) if x_mean is not None else None
+        self.x_std = x_std.to(self.device) if x_std is not None else None
+        self.theta_mean = theta_mean.to(self.device) if theta_mean is not None else None
+        self.theta_std = theta_std.to(self.device) if theta_std is not None else None
         
         """featurizer (simple multi-layer perceptron)
         """
@@ -67,9 +49,6 @@ class NeuralPosteriorEstimator(LightningModule):
         transform = CompositeTransform(transforms)
         self.flow = Flow(transform, base_dist)
 
-        # prior
-        self.prior = prior
-
     def forward(self, x):
         return self.featurizer(x)
     
@@ -78,6 +57,30 @@ class NeuralPosteriorEstimator(LightningModule):
         prior = self.prior(theta, plx, e_plx, self.device)
         context = self(x[:,2:])
         return - self.flow.log_prob(inputs=theta, context=context) - prior
+    
+    def prior(self, theta, plx, e_plx, device, L = 350):
+        """ implements priors for all three parameters,
+        distance : truncated transformed chi2 prior with six degrees of freedom per Bailer-Jones 2015
+        temperature & radius : uniform priors
+        """
+        # distance prior
+        real_theta = theta * self.theta_std.to(device=device) + self.theta_mean.to(device=device)
+        plx = plx * self.x_std[0].to(device=device) + self.x_mean[0].to(device=device)
+        e_plx = e_plx * self.x_std[1].to(device=device) + self.x_mean[1].to(device=device)
+        likelihood = torch.distributions.Normal(1/real_theta[:,1], e_plx).log_prob(plx)
+        distance_prior = transformed_distribution.TransformedDistribution(
+            Chi2(torch.tensor([6]).to(device=device)), 
+            transforms.AffineTransform(loc=torch.tensor([0]).to(device=device), scale=torch.tensor([0.5 * L]).to(device=device))
+        ).log_prob(real_theta[:,1])
+        #uniform prior
+        log_prior = torch.zeros(real_theta.shape[0], device=device)
+        bounds = torch.tensor([[1000, 120000], [0, 2000], [0.001, 0.05]], device=device)
+        for i in range(3):
+            min_bound, max_bound = bounds[i]
+            # Check if parameter i is within bounds for all examples
+            within_bounds = (real_theta[:, i] >= min_bound) & (real_theta[:, i] <= max_bound)
+            log_prior[~within_bounds] = torch.inf
+        return likelihood + distance_prior + log_prior 
 
     def training_step(self, batch, batch_idx):
         x, theta = batch
@@ -98,9 +101,10 @@ class NeuralPosteriorEstimator(LightningModule):
         with open(path + '_hparams.pkl', 'wb') as hparams:
             pickle.dump(self.hparam_dict, hparams)
 
-def load_model_from_path(path):
+def load_model_from_path(path, parameter_dict = None):
     with open(path + '_hparams.pkl', 'rb') as hparams:
         hparams = pickle.load(hparams)
+    hparams = hparams | parameter_dict if parameter_dict is not None else hparams
     npe = NeuralPosteriorEstimator.load_from_checkpoint(f"{path}.ckpt", **hparams)
     return npe
     
@@ -136,14 +140,15 @@ if __name__ == "__main__":
     dataset_train, dataset_val, train_loader, val_loader, theta_mean, theta_std, x_mean, x_std = simulator.load(args.datapath, dataloader=True, 
                                                                                                                 val_fraction = args.val_fraction,
                                                                                                                 batch_size = args.batch_size)
-    npe = NeuralPosteriorEstimator(x_mean.shape[0]-2, args.featurizer_h, args.featurizer_layers, args.nflow_h, args.nflow_layers, args.context_dimension)
+    npe = NeuralPosteriorEstimator(x_mean.shape[0]-2, args.featurizer_h, args.featurizer_layers, args.nflow_h, args.nflow_layers, args.context_dimension,
+                                   theta_mean=theta_mean, theta_std=theta_std, x_mean=x_mean, x_std=x_std)
     
     # start training
     trainer = Trainer(max_epochs=args.max_epochs)
     trainer.fit(model=npe, train_dataloaders=train_loader, val_dataloaders=val_loader);
 
     # save information
-    print(f"save path: {args.savepath}.ckpt")
+    print(f"save path: {args.savepath}")
     trainer.save_checkpoint(f"{args.savepath}.ckpt")
     npe.save_dict(path = f"{args.savepath}")
 
