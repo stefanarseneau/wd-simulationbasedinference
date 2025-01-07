@@ -34,11 +34,10 @@ class NeuralPosteriorEstimator(LightningModule):
         
         """featurizer (simple multi-layer perceptron)
         """
-        seq = [nn.Linear(featurizer_in, featurizer_h), nn.GELU()]
-        for _ in range(featurizer_layers):
-            seq += [nn.Linear(featurizer_h, featurizer_h), nn.GELU()]
-        seq += [nn.Linear(featurizer_h, context_dimension)]
-        self.featurizer = nn.Sequential(*seq)
+        self.featurizer_layers = featurizer_layers
+        self.readin = nn.Sequential(*[nn.Linear(featurizer_in, featurizer_h), nn.GELU(), nn.BatchNorm1d(featurizer_h)])
+        self.seq = nn.Sequential(*[nn.Linear(featurizer_h, featurizer_h), nn.GELU(), nn.BatchNorm1d(featurizer_h), nn.Dropout(0.1)])
+        self.readout = nn.Sequential(*[nn.Linear(featurizer_h, context_dimension)])
 
         """normalizing flow model"""
         base_dist = StandardNormal(shape=[self.flow_in])
@@ -50,7 +49,10 @@ class NeuralPosteriorEstimator(LightningModule):
         self.flow = Flow(transform, base_dist)
 
     def forward(self, x):
-        return self.featurizer(x)
+        x = self.readin(x)
+        for _ in range(self.featurizer_layers):
+            x = self.seq(x) + x
+        return self.readout(x)
     
     def loss(self, x, theta):     
         plx, e_plx, distance = x[:,0], x[:,1],  theta[:,1]

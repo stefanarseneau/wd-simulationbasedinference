@@ -58,8 +58,8 @@ if __name__ == "__main__":
     parser.add_argument('--featurizer_layers', nargs='?', const=2, type=int, default=2)
     # normalizing flow params
     parser.add_argument('--nflow_h', nargs='?', const=32, type=int, default=32)
-    parser.add_argument('--nflow_layers', nargs='?', const=2, type=int, default=2)
-    parser.add_argument('--context_dimension', nargs='?', const=8, type=int, default=8)
+    parser.add_argument('--nflow_layers', nargs='?', const=4, type=int, default=2)
+    parser.add_argument('--context_dimension', nargs='?', const=32, type=int, default=8)
     # data params
     parser.add_argument('--val_fraction', nargs='?', const=0.1, type=float, default=0.1)
     parser.add_argument('--batch_size', nargs='?', const=128, type=int, default=128)
