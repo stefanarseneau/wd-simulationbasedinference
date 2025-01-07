@@ -72,12 +72,13 @@ class NeuralPosteriorEstimator(LightningModule):
         distance_prior = -torch.log(real_theta[:,1]**2 / (2*L**3)) - real_theta[:,1] / L
         #uniform prior
         log_prior = torch.zeros(real_theta.shape[0], device=device)
-        bounds = torch.tensor([[1000, 120000], [0, 2000], [0.001, 0.05]], device=device)
+        bounds = torch.tensor([[1000, 120000], [0, 2000], [0.001, 0.02]], device=device)
         for i in range(3):
             min_bound, max_bound = bounds[i]
             # Check if parameter i is within bounds for all examples
             within_bounds = (real_theta[:, i] >= min_bound) & (real_theta[:, i] <= max_bound)
             log_prior[~within_bounds] = -torch.inf
+            log_prior[within_bounds] = torch.tensor([0.0])
         return likelihood + distance_prior + log_prior 
 
     def training_step(self, batch, batch_idx):
