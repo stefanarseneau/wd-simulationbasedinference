@@ -66,8 +66,7 @@ class Simulator:
         err_flux = flux / snr
         flux_noisy = np.random.normal(flux, err_flux)
         # add the noise to the simulated parameters
-        gmag = -2.5 * np.log10(flux_noisy[0] / 2.4943e-09)
-        err_plx = parallax_uncertainty(gmag, release='dr3') * 1e-3
+        err_plx = self.err_from_plx(plx)
         plx_noisy = np.random.normal(plx, err_plx)
         # combine the two datatypes then send them
         plxobs = np.array([plx_noisy, err_plx])
