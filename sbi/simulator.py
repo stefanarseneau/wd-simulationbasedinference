@@ -39,35 +39,53 @@ def get_plx_data():
     data = np.array([ngf21.Plx, ngf21.e_Plx, ngf21.r_med_geo]).T
     return data
 
-def forward(teff, distance, radius, bands = ['Gaia_G', 'Gaia_BP', 'Gaia_RP', 'SDSS_u', 'SDSS_g', 'SDSS_r', 'SDSS_i', 'SDSS_z']):
-    pc_to_m = 3.0856775814671916e16
-    rsun_to_m = 6.957e8
-    bands = [library[band] for band in bands]
-    wavl, interp = model.wavl, model.model_spec
-    flux = interp((teff, 8)) * ((radius*rsun_to_m) / (distance * pc_to_m))**2
-    band_flux = np.array([band.get_flux(wavl * unit['AA'], flux * unit['erg/s/cm**2/AA'], axis=1).value for band in bands])
-    return band_flux
+class Simulator:
+    def __init__(self, bands = ['Gaia_G', 'Gaia_BP', 'Gaia_RP', 'SDSS_u', 'SDSS_g', 'SDSS_r', 'SDSS_i', 'SDSS_z']):
+        ngf21 = get_ngf21()
+        self.plxdata = np.array([ngf21.Plx, ngf21.e_Plx, ngf21.r_med_geo]).T
+        self.plxdata = self.plxdata[self.plxdata[:,0].argsort()]
+        self.bands = bands
 
-def sim_forward(teff, distance, radius, plxdata, bands):
-    snr = np.random.uniform(300, 400)
-    band_flux = forward(teff, distance, radius, bands)
-    band_flux_noisy = np.random.normal(band_flux, band_flux/snr)
-    obs = np.concatenate([band_flux_noisy, band_flux_noisy/snr])
-    return np.concatenate([plxdata, obs])
+    def err_from_plx(self, plx):
+        return np.interp(plx, self.plxdata[:,0], self.plxdata[:,1])
 
-def simulate(n_train = 50_000, outpath = 'data', bands = ['Gaia_G', 'Gaia_BP', 'Gaia_RP', 'SDSS_u', 'SDSS_g', 'SDSS_r', 'SDSS_i', 'SDSS_z']):
-    plxdata = get_plx_data()
-    # Simulate training data
-    temperature = np.random.uniform(low=2000, high=80000, size=n_train)
-    dist_indx = np.random.randint(0, len(plxdata), size=n_train)
-    radius = np.random.uniform(low=0.004, high=0.025, size=n_train)
-    theta_samples = np.array([temperature, plxdata[dist_indx,-1], radius]).T
-    plx_samples = plxdata[dist_indx,:2]
-    x_samples = np.array([sim_forward(*theta, plx, bands) for plx, theta in tqdm(zip(plx_samples, theta_samples))])
+    def forward_noiseless(self, teff, distance, radius):
+        pc_to_m = 3.0856775814671916e16
+        rsun_to_m = 6.957e8
+        wavl, interp = model.wavl, model.model_spec
+        flux = interp((teff, 8)) * ((radius*rsun_to_m) / (distance * pc_to_m))**2
+        band_flux = np.array([library[band].get_flux(wavl * unit['AA'], flux * unit['erg/s/cm**2/AA'], axis=1).value for band in self.bands])
+        plx = np.array([1000/distance])
+        return np.concatenate([plx, band_flux])
 
-    np.save(os.path.join(outpath, 'wdparams_theta.npy'), theta_samples)
-    np.save(os.path.join(outpath, 'wdparams_x.npy'), x_samples)
-    return theta_samples, x_samples
+    def forward_noisy(self, teff, distance, radius):
+        snr = np.random.uniform(300, 400)
+        noiseless = self.forward_noiseless(teff, distance, radius)
+        plx, flux = noiseless[0], noiseless[1:]
+        # compute noisy fluxes from the drawn SNR
+        err_flux = flux / snr
+        flux_noisy = np.random.normal(flux, err_flux)
+        # add the noise to the simulated parameters
+        gmag = -2.5 * np.log10(flux_noisy[0] / 2.4943e-09)
+        err_plx = parallax_uncertainty(gmag, release='dr3') * 1e-3
+        plx_noisy = np.random.normal(plx, err_plx)
+        # combine the two datatypes then send them
+        plxobs = np.array([plx_noisy, err_plx])
+        fluxobs = np.concatenate([flux_noisy, err_flux])
+        return np.concatenate([plxobs, fluxobs])
+
+    def __call__(self, n_train = 50_000, outpath = 'data'):
+        # Simulate training data
+        temperature = np.random.uniform(low=2000, high=80000, size=n_train)
+        dist_indx = np.random.randint(0, len(self.plxdata), size=n_train)
+        radius = np.random.uniform(low=0.004, high=0.025, size=n_train)
+        theta_samples = np.array([temperature, self.plxdata[dist_indx,-1], radius]).T
+        # simulate noisy data
+        x_samples = np.array([self.forward_noisy(*theta) for theta in tqdm(theta_samples)])
+        # save the data
+        np.save(os.path.join(outpath, 'wdparams_theta.npy'), theta_samples)
+        np.save(os.path.join(outpath, 'wdparams_x.npy'), x_samples)
+        return theta_samples, x_samples
 
 def load(path = 'data', dataloader = True, val_fraction = 0.1, batch_size = 128):
     theta_samples = torch.tensor(np.load(os.path.join(path, 'wdparams_theta.npy')), dtype=torch.float32)

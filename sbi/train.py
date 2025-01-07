@@ -18,13 +18,13 @@ def train_from_file(savepath, datapath, val_fraction, batch_size, max_epochs):
     trainer.save_checkpoint(f"{savepath}.ckpt")
     npe.save_dict(path = f"{savepath}")
 
-def train_from_scratch(featurizer_in, featurizer_h, featurizer_layers, nflow_h, nflow_layers, context_dimension,
+def train_from_scratch(featurizer_h, featurizer_layers, nflow_h, nflow_layers, context_dimension,
                        savepath, datapath, val_fraction, batch_size, max_epochs):
     # load data and build the model
     dataset_train, dataset_val, train_loader, val_loader, theta_mean, theta_std, x_mean, x_std = simulator.load(datapath, dataloader=True, 
                                                                                                                 val_fraction = val_fraction,
                                                                                                                 batch_size = batch_size)
-    npe = model.NeuralPosteriorEstimator(x_mean.shape[0]-2, featurizer_h, featurizer_layers, nflow_h, nflow_layers, context_dimension,
+    npe = model.NeuralPosteriorEstimator(x_mean.shape[0], featurizer_h, featurizer_layers, nflow_h, nflow_layers, context_dimension,
                                          theta_mean=theta_mean, theta_std=theta_std, x_mean=x_mean, x_std=x_std)
     # start training
     trainer = Trainer(max_epochs=max_epochs)
@@ -33,6 +33,19 @@ def train_from_scratch(featurizer_in, featurizer_h, featurizer_layers, nflow_h, 
     print(f"save path: {savepath}")
     trainer.save_checkpoint(f"{savepath}.ckpt")
     npe.save_dict(path = f"{savepath}")
+
+def search_hyperparameters(savepath, datapath, val_fraction, batch_size, max_epochs):
+    # there are five hyperparameters to optimize over
+    featurizer_h_vals = [8, 16, 32]
+    nflow_h_vals = [16, 32, 64]
+    context_dimension_vals = [8, 16, 32]
+    nflow_layers, featurizer_layers = [2], [2]
+
+    for featurizer_h in featurizer_h_vals:
+        for nflow_h in nflow_h_vals:
+            for context_dimension in context_dimension_vals:
+                train_from_scratch(featurizer_h, 2, nflow_h, 2, context_dimension, savepath, datapath, val_fraction, batch_size, max_epochs)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -53,9 +66,11 @@ if __name__ == "__main__":
     parser.add_argument('--max_epochs', nargs='?', const=35, type=int, default=35)
     args = parser.parse_args()
 
-    assert args.trainfrom in ['scratch', 'file']
+    assert args.trainfrom in ['scratch', 'file', 'hyperparams']
     if args.trainfrom == 'file':
         train_from_file(args.savepath, args.datapath, args.val_fraction, args.batch_size, args.max_epochs)
     elif args.trainfrom == 'scratch':
-        train_from_scratch(args.featurizer_in, args.featurizer_h, args.featurizer_layers, args.nflow_h, args.nflow_layers, args.context_dimension,
+        train_from_scratch(args.featurizer_h, args.featurizer_layers, args.nflow_h, args.nflow_layers, args.context_dimension,
                        args.savepath, args.datapath, args.val_fraction, args.batch_size, args.max_epochs)
+    elif args.trainfrom == 'hyperparams':
+        search_hyperparameters(args.savepath, args.datapath, args.val_fraction, args.batch_size, args.max_epochs)

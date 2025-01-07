@@ -55,23 +55,21 @@ class NeuralPosteriorEstimator(LightningModule):
     def loss(self, x, theta):     
         plx, e_plx, distance = x[:,0], x[:,1],  theta[:,1]
         prior = self.prior(theta, plx, e_plx, self.device)
-        context = self(x[:,2:])
-        return - self.flow.log_prob(inputs=theta, context=context) - prior
+        context = self(x)
+        return -self.flow.log_prob(inputs=theta, context=context) + prior
     
-    def prior(self, theta, plx, e_plx, device, L = 350):
+    def prior(self, theta, plx, e_plx, device, L = 1350):
         """ implements priors for all three parameters,
         distance : truncated transformed chi2 prior with six degrees of freedom per Bailer-Jones 2015
         temperature & radius : uniform priors
         """
-        # distance prior
+        # unnormalize parameters
         real_theta = theta * self.theta_std.to(device=device) + self.theta_mean.to(device=device)
         plx = plx * self.x_std[0].to(device=device) + self.x_mean[0].to(device=device)
         e_plx = e_plx * self.x_std[1].to(device=device) + self.x_mean[1].to(device=device)
-        likelihood = torch.distributions.Normal(1/real_theta[:,1], e_plx).log_prob(plx)
-        distance_prior = transformed_distribution.TransformedDistribution(
-            Chi2(torch.tensor([6]).to(device=device)), 
-            transforms.AffineTransform(loc=torch.tensor([0]).to(device=device), scale=torch.tensor([0.5 * L]).to(device=device))
-        ).log_prob(real_theta[:,1])
+        # distance prior
+        likelihood = -0.5*(torch.log(e_plx) + ((1000/real_theta[:,1]) - plx)**2/e_plx)
+        distance_prior = -torch.log(real_theta[:,1]**2 / (2*L**3)) - real_theta[:,1] / L
         #uniform prior
         log_prior = torch.zeros(real_theta.shape[0], device=device)
         bounds = torch.tensor([[1000, 120000], [0, 2000], [0.001, 0.05]], device=device)
@@ -79,7 +77,7 @@ class NeuralPosteriorEstimator(LightningModule):
             min_bound, max_bound = bounds[i]
             # Check if parameter i is within bounds for all examples
             within_bounds = (real_theta[:, i] >= min_bound) & (real_theta[:, i] <= max_bound)
-            log_prior[~within_bounds] = torch.inf
+            log_prior[~within_bounds] = -torch.inf
         return likelihood + distance_prior + log_prior 
 
     def training_step(self, batch, batch_idx):
@@ -140,7 +138,7 @@ if __name__ == "__main__":
     dataset_train, dataset_val, train_loader, val_loader, theta_mean, theta_std, x_mean, x_std = simulator.load(args.datapath, dataloader=True, 
                                                                                                                 val_fraction = args.val_fraction,
                                                                                                                 batch_size = args.batch_size)
-    npe = NeuralPosteriorEstimator(x_mean.shape[0]-2, args.featurizer_h, args.featurizer_layers, args.nflow_h, args.nflow_layers, args.context_dimension,
+    npe = NeuralPosteriorEstimator(x_mean.shape[0], args.featurizer_h, args.featurizer_layers, args.nflow_h, args.nflow_layers, args.context_dimension,
                                    theta_mean=theta_mean, theta_std=theta_std, x_mean=x_mean, x_std=x_std)
     
     # start training
